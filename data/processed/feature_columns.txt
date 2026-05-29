@@ -1,0 +1,59 @@
+Beras
+Minyak Goreng
+Telur Ayam
+Cabai Merah
+Daging Ayam
+Gandum
+Kedelai
+Jagung
+Minyak
+USD_IDR
+curah_hujan_mm
+suhu_c
+is_ramadan
+bulan
+hari_dalam_minggu
+Beras_lag1
+Beras_lag7
+Beras_lag14
+Beras_lag30
+Beras_ma7
+Beras_ma30
+Beras_std7
+Beras_roc7
+Minyak Goreng_lag1
+Minyak Goreng_lag7
+Minyak Goreng_lag14
+Minyak Goreng_lag30
+Minyak Goreng_ma7
+Minyak Goreng_ma30
+Minyak Goreng_std7
+Minyak Goreng_roc7
+Telur Ayam_lag1
+Telur Ayam_lag7
+Telur Ayam_lag14
+Telur Ayam_lag30
+Telur Ayam_ma7
+Telur Ayam_ma30
+Telur Ayam_std7
+Telur Ayam_roc7
+Cabai Merah_lag1
+Cabai Merah_lag7
+Cabai Merah_lag14
+Cabai Merah_lag30
+Cabai Merah_ma7
+Cabai Merah_ma30
+Cabai Merah_std7
+Cabai Merah_roc7
+Daging Ayam_lag1
+Daging Ayam_lag7
+Daging Ayam_lag14
+Daging Ayam_lag30
+Daging Ayam_ma7
+Daging Ayam_ma30
+Daging Ayam_std7
+Daging Ayam_roc7
+sin_month
+cos_month
+sin_dow
+cos_dow
