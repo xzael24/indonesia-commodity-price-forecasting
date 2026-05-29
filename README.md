@@ -1,156 +1,103 @@
-# 🔮 Prediksi Harga Kebutuhan Pokok Indonesia
+# Indonesia Commodity Price Forecasting System
 
-Sistem prediksi harga bahan pokok berbasis **Deep Learning Multivariate Time Series**
-dengan integrasi faktor ekonomi global (kurs rupiah, harga komoditas dunia, cuaca).
+Sistem prediksi harga bahan pokok berbasis deep learning multivariate time series. Sistem ini mengintegrasikan harga pangan domestik (PIHPS Bank Indonesia) dengan indikator makroekonomi global (kurs USD/IDR, harga komoditas dunia) dan data cuaca lokal untuk menghasilkan estimasi harga komoditas pangan yang akurat menggunakan arsitektur LSTM, GRU, dan Temporal Fusion Transformer (TFT).
 
----
+## Struktur Repositori
 
-## 📁 Struktur Project
-
-```
+```text
 price-prediction/
-├── app.py                  # Dashboard Streamlit
-├── run_pipeline.py         # Script utama (jalankan ini)
-├── config.py               # Semua konfigurasi
-├── requirements.txt
+├── app.py                  # Dashboard visualisasi interaktif (Streamlit)
+├── run_pipeline.py         # Orkestrator pipeline (scraping, preprocessing, training)
+├── config.py               # Konfigurasi parameter model dan variabel sistem
+├── requirements.txt        # Daftar dependensi Python
 ├── src/
-│   ├── scraper.py          # Ambil data otomatis
-│   ├── preprocess.py       # Preprocessing & feature engineering
-│   ├── model.py            # LSTM, GRU, TFT
-│   └── train.py            # Training & evaluasi
+│   ├── scraper.py          # Modul ekstraksi data makroekonomi dan cuaca (yfinance/API)
+│   ├── preprocess.py       # Modul rekayasa fitur (feature engineering) dan pembersihan data
+│   ├── model.py            # Definisi arsitektur model (LSTM, GRU, TFT)
+│   └── train.py            # Modul pelatihan, evaluasi, dan penyimpanan model
 ├── data/
-│   ├── raw/                # Data mentah (auto-generated)
-│   └── processed/          # Data siap pakai (auto-generated)
-└── models/                 # Model tersimpan (auto-generated)
+│   ├── raw/                # Direktori penyimpanan data mentah
+│   └── processed/          # Direktori penyimpanan data hasil rekayasa fitur
+└── models/                 # Direktori penyimpanan bobot model terbaik (.pt)
 ```
 
----
+## Prasyarat Sistem
 
-## ⚙️ Setup (Ikuti Urutan Ini!)
+- Python 3.9 atau versi yang lebih baru
+- PyTorch 2.0+ (disarankan menggunakan CUDA untuk pelatihan model TFT)
+- Akses internet untuk ekstraksi data global secara real-time
 
-### Step 1 — Install Python & dependencies
+## Instalasi dan Setup Lingkungan
 
-Pastikan Python 3.9+ sudah terinstall, lalu:
+1. Buat dan aktifkan virtual environment Python:
+   ```bash
+   python -m venv .venv
+   # Untuk Windows (PowerShell):
+   .\.venv\Scripts\Activate.ps1
+   # Untuk Linux/macOS:
+   source .venv/bin/activate
+   ```
 
-```bash
-pip install -r requirements.txt
-```
+2. Instal seluruh dependensi yang diperlukan:
+   ```bash
+   pip install -r requirements.txt
+   ```
+   *Catatan: Apabila terdapat kendala instalasi PyTorch, silakan merujuk pada dokumentasi resmi [PyTorch](https://pytorch.org/get-started/locally/) untuk menyesuaikan dengan CUDA toolkit pada perangkat Anda.*
 
-> Jika error PyTorch, install manual sesuai OS di https://pytorch.org/get-started/locally/
+## Ingesti Data Domestik (PIHPS Bank Indonesia)
 
----
+Data harga domestik diakses secara manual karena tidak adanya API publik resmi yang stabil dari Bank Indonesia.
 
-### Step 2 — Download data PIHPS Bank Indonesia (MANUAL — WAJIB)
+1. Akses portal **PIHPS Bank Indonesia** di [https://www.bi.go.id/hargapangan](https://www.bi.go.id/hargapangan).
+2. Navigasi ke menu **Tabel Harga Berdasarkan Daerah**.
+3. Ekspor data harian dari **01/01/2020** hingga tanggal saat ini untuk komoditas berikut:
+   - Beras
+   - Minyak Goreng
+   - Telur Ayam
+   - Cabai Merah
+   - Daging Ayam
+4. Pastikan data diekspor menggunakan opsi **Pasar Tradisional** dengan cakupan **Nasional**.
+5. Gabungkan hasil ekspor menjadi satu file CSV terpadu dengan nama `pihps_harga.csv` dan simpan pada direktori `data/raw/`.
+6. Struktur header kolom pada `pihps_harga.csv` harus mengikuti format berikut:
+   ```text
+   tanggal,Beras,Minyak Goreng,Telur Ayam,Cabai Merah,Daging Ayam
+   2020-01-01,12000,14000,24000,32000,31000
+   ```
 
-> ⚠️ Bagian ini **harus dilakukan manual** karena tidak ada API publik.
-> Gunakan **PIHPS Bank Indonesia** (aktif & tidak maintenance) sebagai sumber data harga lokal.
+## Pipeline Eksekusi Sistem
 
-1. Buka browser → **https://www.bi.go.id/hargapangan**
-2. Pilih menu **"Tabel Harga Berdasarkan Daerah"**
-3. Isi filter berikut:
-   - **Komoditas:** pilih satu per satu (Beras, Minyak Goreng, Telur Ayam, Cabai Merah, Daging Ayam)
-   - **Jenis Pasar:** Pasar Tradisional
-   - **Provinsi:** Nasional (atau pilih provinsi tertentu)
-   - **Tanggal Mulai:** 01/01/2020
-   - **Tanggal Selesai:** hari ini
-4. Klik **"Lihat Laporan"**
-5. Klik tombol **Export → Excel atau CSV**
-6. Ulangi langkah 3–5 untuk setiap komoditas
-7. **Gabungkan semua kolom** ke satu file dengan format berikut:
-8. **Rename file menjadi** `pihps_harga.csv`
-9. **Simpan di** `data/raw/pihps_harga.csv`
-
-Format kolom yang diharapkan (pastikan header sama persis):
-
-```
-tanggal,Beras,Minyak Goreng,Telur Ayam,Cabai Merah,Daging Ayam
-2020-01-01,12000,14000,24000,32000,31000
-...
-```
-
-> 💡 **Kenapa PIHPS Bank Indonesia?**
-> Data harian resmi dari 82 kota/kabupaten seluruh Indonesia, disurvei setiap hari kerja oleh Bank Indonesia. Lebih lengkap dan stabil dibanding sumber lain.
-
-> 💡 Jika format CSV berbeda, sesuaikan nama kolom di `config.py` → bagian `COMMODITIES`
-
----
-
-### Step 3 — Jalankan pipeline
+Sistem dirancang dengan pipeline modular yang dapat dioperasikan secara end-to-end melalui satu skrip orkestrasi:
 
 ```bash
 python run_pipeline.py
 ```
 
-Ini akan otomatis:
+Skrip di atas akan mengeksekusi tahapan berikut secara berurutan:
+1. **Data Scraping**: Mengambil data kurs USD/IDR, indeks harga minyak nabati, dan komoditas global pendukung lainnya secara otomatis dari Yahoo Finance.
+2. **Preprocessing**: Membersihkan data, menangani *missing values* melalui metode interpolasi, menggabungkan dataset domestik dan global, serta melakukan standardisasi skala fitur (*scaling*).
+3. **Feature Engineering**: Membuat fitur lag (data historis), moving average, dan variabel kalender (tren temporal, hari libur nasional).
+4. **Model Training & Evaluation**: Melatih model LSTM, GRU, dan TFT menggunakan parameter yang dikonfigurasi pada `config.py`, melakukan validasi, lalu mengevaluasi kinerja masing-masing model menggunakan metrik MAE, RMSE, dan MAPE.
+5. **Artifact Saving**: Menyimpan bobot model terbaik berdasarkan nilai loss validasi terendah ke dalam direktori `models/`.
 
-- ✅ Mengambil data Yahoo Finance (kurs, komoditas global)
-- ✅ Memuat data PIHPS
-- ✅ Preprocessing + feature engineering
-- ✅ Training LSTM, GRU, dan TFT
-- ✅ Menyimpan model terbaik
+## Pengoperasian Dashboard Analisis
 
-Estimasi waktu: **15–30 menit** (tergantung CPU/GPU)
-
----
-
-### Step 4 — Jalankan dashboard
+Setelah pipeline selesai dijalankan dan model tersimpan, jalankan dashboard interaktif Streamlit untuk visualisasi dan inferensi prediksi:
 
 ```bash
 streamlit run app.py
 ```
+Aplikasi secara otomatis dapat diakses melalui browser pada alamat default `http://localhost:8501`.
 
-Buka browser → http://localhost:8501
+## Metodologi Pemodelan
 
----
+Akurasi sistem dievaluasi secara komparatif menggunakan tiga arsitektur recurrent dan attention-based neural networks:
 
-## 🤖 Model
+- **Long Short-Term Memory (LSTM)**: Digunakan sebagai baseline model untuk menangkap dependensi sekuensial jangka panjang pada pola harga komoditas pangan.
+- **Gated Recurrent Unit (GRU)**: Arsitektur recurrent yang lebih efisien secara komputasi dengan performa yang kompetitif dibanding LSTM pada data berukuran menengah.
+- **Temporal Fusion Transformer (TFT)**: Model utama berbasis attention mechanism yang dirancang khusus untuk peramalan multi-horizon time series. Keunggulan TFT adalah kemampuannya memisahkan fitur statis, fitur temporal yang diketahui (seperti hari libur), dan fitur temporal yang tidak diketahui (seperti harga komoditas global) serta memberikan interpretabilitas melalui mekanisme atensi.
 
-| Model          | Deskripsi                   | Kapan Digunakan               |
-| -------------- | --------------------------- | ----------------------------- |
-| **LSTM** | Long Short-Term Memory      | Baseline klasik               |
-| **GRU**  | Gated Recurrent Unit        | Baseline ringan               |
-| **TFT**  | Temporal Fusion Transformer | Main model, akurasi tertinggi |
-
----
-
-## 📊 Metrik Evaluasi
-
-| Metrik         | Keterangan                                                       |
-| -------------- | ---------------------------------------------------------------- |
-| **MAE**  | Mean Absolute Error — rata-rata selisih prediksi vs aktual (Rp) |
-| **RMSE** | Root Mean Square Error — penalti lebih besar untuk error besar  |
-| **MAPE** | Mean Absolute Percentage Error — error dalam persen (%)         |
-
-Target: MAPE < 5% untuk komoditas stabil (beras, telur)
-
----
-
-## ⚡ Tips Peningkatan Akurasi
-
-1. **Tambah data lebih lama** — ubah `START_DATE` di `config.py` ke 2018
-2. **Tuning hyperparameter** — edit `HIDDEN_SIZE`, `NUM_LAYERS`, `EPOCHS` di `config.py`
-3. **Tambah fitur** — edit fungsi `add_features()` di `src/preprocess.py`
-4. **Gunakan GPU** — PyTorch otomatis detect CUDA jika tersedia
-
----
-
-## 🏆 Untuk Kompetisi
-
-Sebelum submit kompetisi, pastikan:
-
-- [ ] Data asli dari Bapanas (bukan simulasi)
-- [ ] Dokumentasi metodologi tersedia (lihat notebook/)
-- [ ] MAPE < 5% pada test set
-- [ ] Dashboard berjalan lancar
-- [ ] README ini sudah diperbarui dengan hasil aktual
-
----
-
-## 📄 Teknologi
-
-- **Python 3.9+**
-- **PyTorch** — deep learning framework
-- **Streamlit** — dashboard interaktif
-- **Plotly** — visualisasi
-- **yfinance** — data komoditas global
-- **scikit-learn** — preprocessing
+### Metrik Evaluasi Kinerja
+Setiap model dinilai berdasarkan metrik standard industri:
+- **Mean Absolute Error (MAE)**: Menunjukkan rata-rata absolut selisih prediksi dengan nilai riil dalam satuan Rupiah (IDR).
+- **Root Mean Square Error (RMSE)**: Memberikan penalti lebih tinggi pada selisih prediksi yang besar untuk memastikan kestabilan model.
+- **Mean Absolute Percentage Error (MAPE)**: Mengukur akurasi relatif dalam persentase, membantu perbandingan performa antar komoditas dengan skala harga yang berbeda.
