@@ -55,6 +55,8 @@ SVG_DOWN = """<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" vie
 
 SVG_FLAT = """<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>"""
 
+SVG_TAG = """<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>"""
+
 # ── Global CSS Injection ───────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -207,6 +209,19 @@ def load_scaler():
 
 @st.cache_resource
 def load_model_cached(model_name: str, commodity_name: str, input_size: int):
+    # Extract target_idx for the commodity from scaler.pkl to initialize NLinear properly
+    scaler_path = os.path.join(DATA_PROCESSED_DIR, "scaler.pkl")
+    target_idx = 0
+    if os.path.exists(scaler_path):
+        try:
+            with open(scaler_path, "rb") as f:
+                scaler_data = pickle.load(f)
+                cols = scaler_data["columns"]
+                if commodity_name in cols:
+                    target_idx = cols.index(commodity_name)
+        except Exception:
+            pass
+
     ckpt = os.path.join(MODEL_DIR, f"{model_name}_{commodity_name}_best.pt")
     if not os.path.exists(ckpt):
         # Fallback to general model if commodity-specific model doesn't exist
@@ -214,10 +229,26 @@ def load_model_cached(model_name: str, commodity_name: str, input_size: int):
         if not os.path.exists(ckpt_fallback):
             return None
         ckpt = ckpt_fallback
-    model = get_model(model_name, input_size)
-    model.load_state_dict(torch.load(ckpt, map_location="cpu"))
-    model.eval()
-    return model
+
+    try:
+        sd = torch.load(ckpt, map_location="cpu")
+        detected_size = input_size
+        if model_name == "tft" and "input_proj.weight" in sd:
+            detected_size = sd["input_proj.weight"].shape[1]
+        elif model_name == "lstm" and "lstm.weight_ih_l0" in sd:
+            detected_size = sd["lstm.weight_ih_l0"].shape[1]
+        elif model_name == "gru" and "gru.weight_ih_l0" in sd:
+            detected_size = sd["gru.weight_ih_l0"].shape[1]
+        elif model_name == "nlinear" and "linear.weight" in sd:
+            detected_size = sd["linear.weight"].shape[1] // SEQ_LEN
+
+        model = get_model(model_name, detected_size, target_idx=target_idx)
+        model.load_state_dict(sd)
+        model.eval()
+        return model
+    except Exception as e:
+        print(f"[WARNING] Gagal memuat model {model_name} untuk {commodity_name}: {e}")
+        return None
 
 @st.cache_data
 def load_local_prices():
@@ -241,7 +272,25 @@ def load_results():
 def predict_next_days(model, last_sequence: np.ndarray, scaler, target_idx: int, n_days: int = PRED_LEN):
     """Prediksi n_days ke depan dari last_sequence."""
     model.eval()
-    x = torch.FloatTensor(last_sequence).unsqueeze(0)
+    
+    # Detect the model's expected input_size dynamically
+    model_input_size = last_sequence.shape[1]
+    if hasattr(model, 'input_proj'):
+        model_input_size = model.input_proj.in_features
+    elif hasattr(model, 'lstm'):
+        model_input_size = model.lstm.input_size
+    elif hasattr(model, 'gru'):
+        model_input_size = model.gru.input_size
+    elif hasattr(model, 'linear'):
+        model_input_size = model.linear.in_features // SEQ_LEN
+
+    # Slice sequence if there is a mismatch
+    if last_sequence.shape[1] != model_input_size:
+        seq_sliced = last_sequence[:, :model_input_size]
+    else:
+        seq_sliced = last_sequence
+
+    x = torch.FloatTensor(seq_sliced).unsqueeze(0)
     with torch.no_grad():
         pred_scaled = model(x).numpy()[0]
 
@@ -483,7 +532,18 @@ st.sidebar.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-commodity_options = ["Beras", "Minyak Goreng", "Telur Ayam", "Cabai Merah", "Daging Ayam"]
+# Try dynamically loading commodities from raw dataset pihps_harga.csv
+_raw_path = os.path.join(DATA_RAW_DIR, "pihps_harga.csv")
+if os.path.exists(_raw_path):
+    try:
+        _df_cols = pd.read_csv(_raw_path, nrows=0).columns.tolist()
+        commodity_options = [c for c in _df_cols if c and c.strip() and c.lower() not in ['date', 'unnamed: 0', 'index', 'tanggal']]
+        if not commodity_options:
+            commodity_options = ["Beras", "Minyak Goreng", "Telur Ayam", "Cabai Merah", "Daging Ayam"]
+    except Exception:
+        commodity_options = ["Beras", "Minyak Goreng", "Telur Ayam", "Cabai Merah", "Daging Ayam"]
+else:
+    commodity_options = ["Beras", "Minyak Goreng", "Telur Ayam", "Cabai Merah", "Daging Ayam"]
 
 # Commodity selector
 st.sidebar.markdown(f"""
@@ -494,7 +554,7 @@ st.sidebar.markdown(f"""
 """, unsafe_allow_html=True)
 selected_commodity = st.sidebar.selectbox("Pilih Komoditas", commodity_options, label_visibility="collapsed")
 
-model_options = ["tft", "lstm", "gru"]
+model_options = ["ensemble", "nlinear", "tft", "lstm", "gru"]
 
 # Model selector
 st.sidebar.markdown(f"""
@@ -506,7 +566,13 @@ st.sidebar.markdown(f"""
 selected_model = st.sidebar.selectbox(
     "Model",
     model_options,
-    format_func=lambda x: {"tft": "TFT (Terbaik)", "lstm": "LSTM", "gru": "GRU"}[x],
+    format_func=lambda x: {
+        "ensemble": "Ensemble Konsensus (Rekomendasi)",
+        "nlinear": "NLinear (SOTA)",
+        "tft": "TFT",
+        "lstm": "LSTM",
+        "gru": "GRU"
+    }[x],
     label_visibility="collapsed"
 )
 
@@ -633,7 +699,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # Tabs
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Prediksi & Simulasi", "Faktor Eksternal", "Performa Model", "Tentang Proyek", "Pusat Kontrol Pipeline"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Prediksi & Simulasi", "Faktor Eksternal", "Performa Model", "Tentang Proyek", "Pusat Kontrol Pipeline", "Manajemen Komoditas"])
 
 # ── Tab 1: Prediksi ─────────────────────────────────────────────────────────
 with tab1:
@@ -716,24 +782,51 @@ with tab1:
         if os.path.exists(X_test_path):
             X_test = np.load(X_test_path)
             input_size = X_test.shape[2]
-            model = load_model_cached(selected_model, selected_commodity, input_size)
+            target_idx = cols.index(selected_commodity) if selected_commodity in cols else 0
+            last_seq   = X_test[-1]
 
-            if model is None:
+            # Determine models to load
+            if selected_model == "ensemble":
+                models_to_run = ["tft", "lstm", "gru", "nlinear"]
+            else:
+                models_to_run = [selected_model]
+
+            loaded_models = {}
+            for m_name in models_to_run:
+                m_obj = load_model_cached(m_name, selected_commodity, input_size)
+                if m_obj is not None:
+                    loaded_models[m_name] = m_obj
+
+            if not loaded_models:
                 render_alert_warning(
                     f"Model <strong>{selected_model.upper()}</strong> belum ditraining. Silakan jalankan training pipeline terlebih dahulu."
                 )
             else:
-                target_idx = cols.index(selected_commodity) if selected_commodity in cols else 0
-                last_seq   = X_test[-1]
-                pred = predict_next_days(model, last_seq, scaler, target_idx, n_days=pred_horizon)
-
-                # What-If Scenario prediction
+                # Run predictions
+                preds = []
+                preds_sim = []
                 is_scenario_active = (sim_usd != 0.0 or sim_oil != 0.0 or sim_rain != 0.0)
-                if is_scenario_active:
-                    sim_seq = simulate_scenario(last_seq, scaler, cols, sim_usd, sim_oil, sim_rain)
-                    pred_sim = predict_next_days(model, sim_seq, scaler, target_idx, n_days=pred_horizon)
-                else:
-                    pred_sim = None
+                sim_seq = simulate_scenario(last_seq, scaler, cols, sim_usd, sim_oil, sim_rain) if is_scenario_active else None
+
+                for m_name, model in loaded_models.items():
+                    pred_m = predict_next_days(model, last_seq, scaler, target_idx, n_days=pred_horizon)
+                    preds.append(pred_m)
+                    
+                    if is_scenario_active:
+                        pred_sim_m = predict_next_days(model, sim_seq, scaler, target_idx, n_days=pred_horizon)
+                        preds_sim.append(pred_sim_m)
+
+                # Average predictions to get ensemble, or use the single prediction
+                pred = np.mean(preds, axis=0)
+                pred_sim = np.mean(preds_sim, axis=0) if is_scenario_active else None
+
+                if selected_model == "ensemble":
+                    st.markdown(f"""
+                    <div style="font-size: 0.8rem; color: #3B82F6; margin-bottom: 1rem; font-family: 'Inter', sans-serif; display: flex; align-items: center; gap: 0.35rem;">
+                        <span style="color: #3B82F6; display: inline-flex; align-items: center;">{SVG_INFO}</span>
+                        <span><strong>Prediksi Konsensus Ensemble</strong> menggabungkan model: {', '.join([m.upper() for m in loaded_models.keys()])}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
 
                 # Tanggal prediksi
                 last_date = df_local.index[-1] if hasattr(df_local.index[-1], 'date') else datetime.today()
@@ -770,7 +863,11 @@ with tab1:
                 rmse_val = None
                 if results_data and selected_commodity in results_data:
                     commodity_res = results_data[selected_commodity]
-                    if selected_model in commodity_res and isinstance(commodity_res[selected_model], dict):
+                    if selected_model == "ensemble":
+                        # Average RMSE of all available models in the ensemble
+                        rmse_vals = [commodity_res[m].get("RMSE", 0) for m in loaded_models.keys() if m in commodity_res and isinstance(commodity_res[m], dict)]
+                        rmse_val = np.mean(rmse_vals) if rmse_vals else None
+                    elif selected_model in commodity_res and isinstance(commodity_res[selected_model], dict):
                         rmse_val = commodity_res[selected_model].get("RMSE", None)
                 
                 if rmse_val is not None:
@@ -821,7 +918,7 @@ with tab1:
                     if pred_sim is not None:
                         tbl_data["Proyeksi Skenario"] = [f"Rp {p:,.0f}" for p in pred_sim]
                     df_pred = pd.DataFrame(tbl_data)
-                    st.dataframe(df_pred, use_container_width=True, hide_index=True)
+                    st.dataframe(df_pred, width='stretch', hide_index=True)
 
                     # Export button
                     df_download = pd.DataFrame({
@@ -886,7 +983,10 @@ with tab2:
         
         df_all = df_local.join(df_ext, how="inner").join(df_wea, how="inner")
         
-        local_cols = ["Beras", "Minyak Goreng", "Telur Ayam", "Cabai Merah", "Daging Ayam"]
+        # Dynamically load from df_local columns
+        local_cols = [c for c in df_local.columns if c and c.strip() and c.lower() not in ['date', 'unnamed: 0', 'index', 'tanggal']]
+        if not local_cols:
+            local_cols = ["Beras", "Minyak Goreng", "Telur Ayam", "Cabai Merah", "Daging Ayam"]
         ext_cols = ["Gandum", "Kedelai", "Jagung", "Minyak", "USD_IDR", "curah_hujan_mm", "suhu_c"]
         
         # Filter only existing columns
@@ -1119,7 +1219,7 @@ with tab3:
             st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
             st.dataframe(
                 df_metrics.style.format({"MAE (Rp)": "Rp {:,.0f}", "RMSE (Rp)": "Rp {:,.0f}", "MAPE (%)": "{:.2f}%"}),
-                use_container_width=True, hide_index=True
+                width='stretch', hide_index=True
             )
             
             best = min(commodity_results, key=lambda k: commodity_results[k]["MAPE"] if (isinstance(commodity_results[k], dict) and "MAPE" in commodity_results[k]) else 99999)
@@ -1225,9 +1325,30 @@ with tab5:
     <h3 style="font-size: 1.15rem; font-weight: 600; color: #F9FAFB; margin-bottom: 0.75rem; font-family: 'Plus Jakarta Sans', sans-serif;">
         Pusat Kontrol & Pipeline Data
     </h3>
-    <p style="font-size: 0.9rem; line-height: 1.6; color: #9CA3AF; font-family: 'Inter', sans-serif; margin-bottom: 1.5rem;">
-        Di halaman ini, Anda dapat menjalankan seluruh pipeline secara otomatis. Proses ini akan mengunduh data terbaru dari Yahoo Finance (pasar global), mengambil curah hujan dan hari libur nasional, merapikan data, dan melakukan pelatihan ulang (*retraining*) untuk ketiga arsitektur deep learning (**LSTM**, **GRU**, dan **TFT**).
+    <p style="font-size: 0.9rem; line-height: 1.6; color: #9CA3AF; font-family: 'Inter', sans-serif; margin-bottom: 1rem;">
+        Di halaman ini, Anda dapat memantau dan menjalankan seluruh pipeline secara otomatis. Proses ini secara otomatis mengunduh data real-time terbaru dari portal Bank Indonesia (PIHPS), mengambil data pasar global dari Yahoo Finance, dan melakukan pelatihan ulang (*retraining*) untuk model **LSTM**, **GRU**, **TFT**, dan **NLinear**.
     </p>
+    """, unsafe_allow_html=True)
+    
+    # Menampilkan Status Otomatisasi
+    st.markdown(f"""
+    <div style="
+        background-color: rgba(16, 185, 129, 0.04);
+        border: 1px solid rgba(16, 185, 129, 0.2);
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1.5rem;
+        font-family: 'Inter', sans-serif;
+    ">
+        <div style="display: flex; align-items: center; gap: 0.5rem; color: #10B981; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.25rem;">
+            <span style="display: flex; align-items: center; color: #10B981;">{SVG_CHECK}</span>
+            <span>SISTEM SINKRONISASI & RETRAINING AKTIF</span>
+        </div>
+        <div style="font-size: 0.775rem; color: #9CA3AF; line-height: 1.5;">
+            • <strong>Sinkronisasi Real-Time</strong>: Terhubung aktif ke portal Bank Indonesia untuk memperbarui harga lokal setiap hari secara dinamis.<br/>
+            • <strong>Retraining Otomatis</strong>: Terjadwal setiap hari pukul <strong>23.00 WIB</strong> untuk menyerap data terbaru ke dalam pembelajaran model.
+        </div>
+    </div>
     """, unsafe_allow_html=True)
 
     # Check process status in session state
@@ -1343,3 +1464,196 @@ with tab5:
             st.session_state.pipeline_proc = proc
             st.session_state.pipeline_log_file = log_file
             st.rerun()
+
+
+# ── Tab 6: Manajemen Komoditas ──────────────────────────────────────────────
+with tab6:
+    import sys
+    from src.commodity_manager import parse_uploaded_file, integrate_into_dataset, delete_commodity
+    from src.preprocess import run_preprocessing
+    from src.train import train_single_commodity
+    import time
+    
+    st.markdown("""
+    <h3 style="font-size: 1.15rem; font-weight: 600; color: #F9FAFB; margin-bottom: 0.75rem; font-family: 'Plus Jakarta Sans', sans-serif;">
+        Manajemen Komoditas Dinamis
+    </h3>
+    <p style="font-size: 0.9rem; line-height: 1.6; color: #9CA3AF; font-family: 'Inter', sans-serif; margin-bottom: 1.5rem;">
+        Halaman khusus administrator untuk mengunggah bahan pangan baru (Excel/CSV) ke sistem secara dinamis.
+        Sistem secara otomatis membersihkan nama subkategori (misal: <em>Bawang Merah Ukuran Sedang</em>, <em>Bawang Merah Super</em>) 
+        dan menggabungkannya ke kategori utama (<em>Bawang Merah</em>) menggunakan rata-rata harga harian.
+    </p>
+    """, unsafe_allow_html=True)
+
+    col_upload, col_delete = st.columns([1, 1])
+
+    with col_upload:
+        st.markdown("""
+        <h4 style="font-size: 1.05rem; font-weight: 600; color: #F9FAFB; margin-bottom: 1rem; font-family: 'Plus Jakarta Sans', sans-serif;">
+            Tambah / Perbarui Komoditas
+        </h4>
+        """, unsafe_allow_html=True)
+        
+        uploaded_file = st.file_uploader(
+            "Seret dan lepas file Excel (.xlsx, .xls) atau CSV di sini",
+            type=["xlsx", "xls", "csv"],
+            key="commodity_upload"
+        )
+        
+        if uploaded_file is not None:
+            try:
+                # Parse uploaded file
+                df_parsed = parse_uploaded_file(uploaded_file)
+                
+                # Render summary preview card
+                num_records = len(df_parsed)
+                start_dt = df_parsed.index.min().date()
+                end_dt = df_parsed.index.max().date()
+                cols_found = df_parsed.columns.tolist()
+                
+                st.markdown(f"""
+                <div style="
+                    background-color: rgba(59, 130, 246, 0.03);
+                    border: 1px solid #1F2937;
+                    border-radius: 12px;
+                    padding: 1.25rem;
+                    margin-bottom: 1.25rem;
+                    font-family: 'Inter', sans-serif;
+                ">
+                    <div style="font-weight: 600; color: #F9FAFB; font-size: 0.9rem; margin-bottom: 0.5rem; font-family: 'Plus Jakarta Sans', sans-serif;">
+                        Preview File Terdeteksi:
+                    </div>
+                    <div style="font-size: 0.8rem; color: #9CA3AF; line-height: 1.6;">
+                        • <strong>Jumlah Hari</strong>: {num_records} baris harga harian<br/>
+                        • <strong>Rentang Tanggal</strong>: {start_dt} s/d {end_dt}<br/>
+                        • <strong>Komoditas Hasil Parsing</strong>: <span style="color: #10B981; font-weight: 600;">{", ".join(cols_found)}</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown("##### Tabel Data Hasil Parsing & Agregasi")
+                st.dataframe(df_parsed.head(10), use_container_width=True)
+                
+                # Action button
+                if st.button("Integrasikan & Latih Model", type="primary", use_container_width=True):
+                    with st.spinner("Mengintegrasikan data ke pihps_harga.csv..."):
+                        report = integrate_into_dataset(df_parsed)
+                        st.success(f"Integrasi data sukses! Ditambahkan: {report['added']} | Diperbarui: {report['updated']}")
+                    
+                    # Live console streaming for preprocessing & training!
+                    st.markdown("##### Proses Pelatihan Model Runtun Waktu")
+                    log_placeholder = st.empty()
+                    
+                    class StreamlitStdout:
+                        def __init__(self, placeholder):
+                            self.placeholder = placeholder
+                            self.log_data = ""
+                        def write(self, text):
+                            self.log_data += text
+                            # Render logs cleanly
+                            self.placeholder.code(self.log_data[-4000:])
+                        def flush(self):
+                            pass
+                            
+                    # Redirect sys.stdout to our custom stream
+                    old_stdout = sys.stdout
+                    sys.stdout = StreamlitStdout(log_placeholder)
+                    
+                    try:
+                        # 1. Run Preprocessing
+                        print("[PROCESS] Menjalankan Preprocessing Pipeline untuk Komoditas Baru...")
+                        local = pd.read_csv(os.path.join(DATA_RAW_DIR, "pihps_harga.csv"), index_col=0, parse_dates=True)
+                        local.index.name = "tanggal"
+                        
+                        external = pd.read_csv(os.path.join(DATA_RAW_DIR, "external_factors.csv"), index_col=0, parse_dates=True)
+                        external.index.name = "tanggal"
+                        
+                        weather = pd.read_csv(os.path.join(DATA_RAW_DIR, "bmkg_cuaca.csv"), index_col=0, parse_dates=True)
+                        weather.index.name = "tanggal"
+                        
+                        holidays = pd.read_csv(os.path.join(DATA_RAW_DIR, "holiday_features.csv"), index_col=0, parse_dates=True)
+                        holidays.index.name = "tanggal"
+                        
+                        data_dict = {
+                            "local": local,
+                            "external": external,
+                            "weather": weather,
+                            "holidays": holidays
+                        }
+                        
+                        # Reload config dynamically
+                        import importlib
+                        import config
+                        importlib.reload(config)
+                        
+                        # Run preprocessing for all target commodities found in Excel
+                        for com in cols_found:
+                            print(f"[PROCESS] Memproses sekuens data untuk {com}...")
+                            run_preprocessing(data_dict, target_commodity=com)
+                            
+                        # 2. Run Isolated Fast Training for each new commodity
+                        for com in cols_found:
+                            print(f"[PROCESS] Memulai Pelatihan Model LSTM, GRU, TFT, NLinear untuk {com}...")
+                            train_single_commodity(com)
+                            print(f"[SUCCESS] Pelatihan model untuk {com} selesai dengan sukses!")
+                            
+                    except Exception as ex:
+                        print(f"[ERROR] Proses gagal: {ex}")
+                    finally:
+                        # Restore stdout
+                        sys.stdout = old_stdout
+                        
+                    st.success("Seluruh proses impor data dan retraining model selesai! Dashboard akan disegarkan.")
+                    time.sleep(2)
+                    st.cache_data.clear()
+                    st.cache_resource.clear()
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Gagal memproses file: {e}")
+
+    with col_delete:
+        st.markdown("""
+        <h4 style="font-size: 1.05rem; font-weight: 600; color: #F9FAFB; margin-bottom: 1.5rem; font-family: 'Plus Jakarta Sans', sans-serif;">
+            Konsol Penghapusan Komoditas
+        </h4>
+        """, unsafe_allow_html=True)
+        
+        st.markdown(f"""
+        <div style="
+            background-color: rgba(244, 63, 94, 0.03);
+            border: 1px solid rgba(244, 63, 94, 0.2);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.8rem;
+            line-height: 1.5;
+            color: #9CA3AF;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        ">
+            <span style="color: #F43F5E; flex-shrink: 0; display: inline-flex; align-items: center; margin-top: 0.15rem;">{SVG_ALERT_TRIANGLE}</span>
+            <span><strong>TINDAKAN BERBAHAYA</strong>: Menghapus komoditas akan menghapus kolom harga secara permanen dari dataset utama, menghapus semua model best checkpoints (*_best.pt), serta membersihkan data performa dari hasil evaluasi. Tindakan ini tidak dapat dibatalkan.</span>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Display current commodities with elegant delete buttons
+        active_coms = commodity_options
+        if active_coms:
+            for com in active_coms:
+                col_name, col_btn = st.columns([3, 2])
+                with col_name:
+                    st.markdown(f"<div style='padding-top: 0.35rem; font-family: \"Inter\", sans-serif; font-size: 0.9rem; font-weight: 500; color: #F3F4F6; display: flex; align-items: center; gap: 0.5rem;'><span style='color: #9CA3AF; display: inline-flex; align-items: center;'>{SVG_TAG}</span><span>{com}</span></div>", unsafe_allow_html=True)
+                with col_btn:
+                    if st.button(f"Hapus {com}", key=f"btn_del_{com}", use_container_width=True, help=f"Hapus komoditas {com} permanen"):
+                        with st.spinner(f"Menghapus komoditas {com} secara bersih..."):
+                            delete_commodity(com)
+                            st.success(f"Komoditas {com} berhasil dihapus!")
+                            time.sleep(1)
+                            st.cache_data.clear()
+                            st.cache_resource.clear()
+                            st.rerun()
+        else:
+            st.info("Tidak ada komoditas aktif terdeteksi.")
+

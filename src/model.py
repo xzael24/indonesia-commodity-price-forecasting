@@ -10,7 +10,7 @@ import os
 import torch
 import torch.nn as nn
 import numpy as np
-from config import HIDDEN_SIZE, NUM_LAYERS, DROPOUT, PRED_LEN, MODEL_DIR
+from config import HIDDEN_SIZE, NUM_LAYERS, DROPOUT, PRED_LEN, MODEL_DIR, SEQ_LEN
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -126,10 +126,41 @@ class TFTModel(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# 4. NLinear (Normalized Linear Model)
+# ─────────────────────────────────────────────────────────────────────────
+
+class NLinearModel(nn.Module):
+    """
+    NLinearModel (Normalized Linear Model).
+    Reference: Zeng et al. 2023 — https://arxiv.org/abs/2205.13504
+    """
+    def __init__(self, input_size: int, seq_len: int = SEQ_LEN, pred_len: int = PRED_LEN, target_idx: int = 0):
+        super().__init__()
+        self.seq_len = seq_len
+        self.pred_len = pred_len
+        self.target_idx = target_idx
+        # Flatten sequence: (seq_len * input_size) to predict (pred_len)
+        self.linear = nn.Linear(seq_len * input_size, pred_len)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x shape: (B, seq_len, input_size)
+        seq_last = x[:, -1:, :]       # (B, 1, input_size)
+        x_norm = x - seq_last          # (B, seq_len, input_size) - Normalization
+        
+        x_flat = x_norm.reshape(x.size(0), -1)  # (B, seq_len * input_size)
+        pred = self.linear(x_flat)              # (B, pred_len)
+        
+        # Denormalization: add back the last value of the target column
+        target_last = seq_last[:, 0, self.target_idx] # (B,)
+        pred = pred + target_last.unsqueeze(-1)       # (B, pred_len)
+        return pred
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Training & evaluasi
 # ─────────────────────────────────────────────────────────────────────────
 
-def get_model(name: str, input_size: int) -> nn.Module:
+def get_model(name: str, input_size: int, target_idx: int = 0) -> nn.Module:
     name = name.lower()
     if name == "lstm":
         return LSTMModel(input_size)
@@ -137,8 +168,10 @@ def get_model(name: str, input_size: int) -> nn.Module:
         return GRUModel(input_size)
     elif name == "tft":
         return TFTModel(input_size)
+    elif name == "nlinear":
+        return NLinearModel(input_size, target_idx=target_idx)
     else:
-        raise ValueError(f"Model '{name}' tidak dikenal. Pilih: lstm, gru, tft")
+        raise ValueError(f"Model '{name}' tidak dikenal. Pilih: lstm, gru, tft, nlinear")
 
 
 def train_model(model: nn.Module, X_train: np.ndarray, y_train: np.ndarray,
@@ -146,7 +179,7 @@ def train_model(model: nn.Module, X_train: np.ndarray, y_train: np.ndarray,
                 epochs: int = 100, lr: float = 0.001, batch_size: int = 32,
                 model_name: str = "model") -> dict:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"► Training {model_name.upper()} di {device}...")
+    print(f"[INFO] Training {model_name.upper()} di {device}...")
     model.to(device)
 
     X_t = torch.FloatTensor(X_train).to(device)
@@ -156,7 +189,8 @@ def train_model(model: nn.Module, X_train: np.ndarray, y_train: np.ndarray,
 
     optimizer   = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler   = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5)
-    criterion   = nn.MSELoss()
+    # Using Huber Loss (Smooth L1 Loss) instead of MSE Loss to handle price spikes/outliers
+    criterion   = nn.SmoothL1Loss(beta=0.1)
     history     = {"train_loss": [], "val_loss": []}
     best_val    = float("inf")
     patience_cnt = 0
@@ -201,10 +235,10 @@ def train_model(model: nn.Module, X_train: np.ndarray, y_train: np.ndarray,
         else:
             patience_cnt += 1
             if patience_cnt >= PATIENCE:
-                print(f"  ⏹ Early stopping di epoch {epoch}")
+                print(f"  [STOP] Early stopping di epoch {epoch}")
                 break
 
-    print(f"  ✓ Best val loss: {best_val:.5f}")
+    print(f"  [OK] Best val loss: {best_val:.5f}")
     return history
 
 

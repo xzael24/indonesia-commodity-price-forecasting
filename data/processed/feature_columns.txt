@@ -1,8 +1,9 @@
+Bawang Merah
 Beras
-Minyak Goreng
-Telur Ayam
 Cabai Merah
 Daging Ayam
+Minyak Goreng
+Telur Ayam
 Gandum
 Kedelai
 Jagung
@@ -13,6 +14,14 @@ suhu_c
 is_ramadan
 bulan
 hari_dalam_minggu
+Bawang Merah_lag1
+Bawang Merah_lag7
+Bawang Merah_lag14
+Bawang Merah_lag30
+Bawang Merah_ma7
+Bawang Merah_ma30
+Bawang Merah_std7
+Bawang Merah_roc7
 Beras_lag1
 Beras_lag7
 Beras_lag14
@@ -21,22 +30,6 @@ Beras_ma7
 Beras_ma30
 Beras_std7
 Beras_roc7
-Minyak Goreng_lag1
-Minyak Goreng_lag7
-Minyak Goreng_lag14
-Minyak Goreng_lag30
-Minyak Goreng_ma7
-Minyak Goreng_ma30
-Minyak Goreng_std7
-Minyak Goreng_roc7
-Telur Ayam_lag1
-Telur Ayam_lag7
-Telur Ayam_lag14
-Telur Ayam_lag30
-Telur Ayam_ma7
-Telur Ayam_ma30
-Telur Ayam_std7
-Telur Ayam_roc7
 Cabai Merah_lag1
 Cabai Merah_lag7
 Cabai Merah_lag14
@@ -53,6 +46,57 @@ Daging Ayam_ma7
 Daging Ayam_ma30
 Daging Ayam_std7
 Daging Ayam_roc7
+Minyak Goreng_lag1
+Minyak Goreng_lag7
+Minyak Goreng_lag14
+Minyak Goreng_lag30
+Minyak Goreng_ma7
+Minyak Goreng_ma30
+Minyak Goreng_std7
+Minyak Goreng_roc7
+Telur Ayam_lag1
+Telur Ayam_lag7
+Telur Ayam_lag14
+Telur Ayam_lag30
+Telur Ayam_ma7
+Telur Ayam_ma30
+Telur Ayam_std7
+Telur Ayam_roc7
+USD_IDR_lag7
+USD_IDR_lag14
+USD_IDR_lag30
+USD_IDR_ma7
+USD_IDR_ma30
+Minyak_lag7
+Minyak_lag14
+Minyak_lag30
+Minyak_ma7
+Minyak_ma30
+Gandum_lag7
+Gandum_lag14
+Gandum_lag30
+Gandum_ma7
+Gandum_ma30
+Kedelai_lag7
+Kedelai_lag14
+Kedelai_lag30
+Kedelai_ma7
+Kedelai_ma30
+Jagung_lag7
+Jagung_lag14
+Jagung_lag30
+Jagung_ma7
+Jagung_ma30
+curah_hujan_mm_lag7
+curah_hujan_mm_lag14
+curah_hujan_mm_lag30
+curah_hujan_mm_ma7
+curah_hujan_mm_ma30
+suhu_c_lag7
+suhu_c_lag14
+suhu_c_lag30
+suhu_c_ma7
+suhu_c_ma30
 sin_month
 cos_month
 sin_dow

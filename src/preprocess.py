@@ -20,7 +20,7 @@ from config import SEQ_LEN, PRED_LEN, TRAIN_RATIO, DATA_PROCESSED_DIR
 
 def merge_all_sources(data: dict) -> pd.DataFrame:
     """Gabungkan semua DataFrame ke satu tabel harian."""
-    print("► Menggabungkan semua sumber data...")
+    print("[INFO] Menggabungkan semua sumber data...")
 
     local    = data["local"]
     external = data["external"]
@@ -32,7 +32,7 @@ def merge_all_sources(data: dict) -> pd.DataFrame:
     df = df.join(weather,   how="left")
     df = df.join(holidays,  how="left")
 
-    print(f"  ✓ Shape setelah merge: {df.shape}")
+    print(f"  [OK] Shape setelah merge: {df.shape}")
     return df
 
 
@@ -40,9 +40,9 @@ def merge_all_sources(data: dict) -> pd.DataFrame:
 
 def handle_missing(df: pd.DataFrame) -> pd.DataFrame:
     """Forward-fill (akhir pekan/libur), lalu backward-fill sisa awal."""
-    print(f"► Missing values sebelum: {df.isnull().sum().sum()}")
-    df = df.fillna(method="ffill").fillna(method="bfill")
-    print(f"  ✓ Missing values sesudah: {df.isnull().sum().sum()}")
+    print(f"[INFO] Missing values sebelum: {df.isnull().sum().sum()}")
+    df = df.ffill().bfill()
+    print(f"  [OK] Missing values sesudah: {df.isnull().sum().sum()}")
     return df
 
 
@@ -50,9 +50,10 @@ def handle_missing(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
     """Tambahkan fitur teknikal dan temporal."""
-    print("► Feature engineering...")
+    print("[INFO] Feature engineering...")
 
-    target_cols = ["Beras", "Minyak Goreng", "Telur Ayam", "Cabai Merah", "Daging Ayam"]
+    from config import COMMODITIES
+    target_cols = COMMODITIES
 
     for col in target_cols:
         if col not in df.columns:
@@ -67,6 +68,18 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
         # Rate of change
         df[f"{col}_roc7"] = df[col].pct_change(7)
 
+    # External macroeconomic and weather lag + rolling features (delayed price transmission)
+    external_cols = ["USD_IDR", "Minyak", "Gandum", "Kedelai", "Jagung", "curah_hujan_mm", "suhu_c"]
+    for col in external_cols:
+        if col not in df.columns:
+            continue
+        # Delayed transmission effect lags
+        for lag in [7, 14, 30]:
+            df[f"{col}_lag{lag}"] = df[col].shift(lag)
+        # Smoothing trends
+        df[f"{col}_ma7"]  = df[col].rolling(7).mean()
+        df[f"{col}_ma30"] = df[col].rolling(30).mean()
+
     # Temporal features
     df["sin_month"] = np.sin(2 * np.pi * df.index.month / 12)
     df["cos_month"] = np.cos(2 * np.pi * df.index.month / 12)
@@ -74,7 +87,7 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     df["cos_dow"]   = np.cos(2 * np.pi * df.index.dayofweek / 7)
 
     df = df.dropna()
-    print(f"  ✓ Shape setelah feature engineering: {df.shape}")
+    print(f"  [OK] Shape setelah feature engineering: {df.shape}")
     return df
 
 
@@ -82,7 +95,7 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def normalize(df: pd.DataFrame):
     """MinMax scale ke [0,1]. Kembalikan array + scaler untuk inverse."""
-    print("► Normalisasi data...")
+    print("[INFO] Normalisasi data...")
     scaler = MinMaxScaler()
     scaled = scaler.fit_transform(df.values)
 
@@ -93,7 +106,7 @@ def normalize(df: pd.DataFrame):
     with open(os.path.join(DATA_PROCESSED_DIR, "feature_columns.txt"), "w") as f:
         f.write("\n".join(df.columns.tolist()))
 
-    print(f"  ✓ Scaler tersimpan di {DATA_PROCESSED_DIR}/scaler.pkl")
+    print(f"  [OK] Scaler tersimpan di {DATA_PROCESSED_DIR}/scaler.pkl")
     return scaled, scaler, df.columns.tolist()
 
 
@@ -105,14 +118,14 @@ def create_sequences(scaled: np.ndarray, target_idx: int = 0):
     X : (N, SEQ_LEN, n_features)
     y : (N, PRED_LEN)  — target kolom pertama (Beras by default)
     """
-    print(f"► Membuat sequences (seq={SEQ_LEN}, pred={PRED_LEN})...")
+    print(f"[INFO] Membuat sequences (seq={SEQ_LEN}, pred={PRED_LEN})...")
     X, y = [], []
     total = len(scaled)
     for i in range(total - SEQ_LEN - PRED_LEN + 1):
         X.append(scaled[i : i + SEQ_LEN])
         y.append(scaled[i + SEQ_LEN : i + SEQ_LEN + PRED_LEN, target_idx])
     X, y = np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
-    print(f"  ✓ X: {X.shape} | y: {y.shape}")
+    print(f"  [OK] X: {X.shape} | y: {y.shape}")
     return X, y
 
 
@@ -130,7 +143,7 @@ def split_data(X: np.ndarray, y: np.ndarray):
     X_test  = X[n_train + n_val:]
     y_test  = y[n_train + n_val:]
 
-    print(f"  ✓ Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
+    print(f"  [OK] Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
 
     # Simpan ke disk
     os.makedirs(DATA_PROCESSED_DIR, exist_ok=True)
@@ -169,7 +182,7 @@ def run_preprocessing(data: dict, target_commodity: str = "Beras"):
         np.save(os.path.join(DATA_PROCESSED_DIR, f"y_val_{com}.npy"),   y_com[n_train : n_train + n_val])
         np.save(os.path.join(DATA_PROCESSED_DIR, f"y_test_{com}.npy"),  y_com[n_train + n_val:])
 
-    print(f"\n✅ Preprocessing selesai. Target default: {target_commodity}. Seluruh komoditas disimpan.")
+    print(f"\n[SUCCESS] Preprocessing selesai. Target default: {target_commodity}. Seluruh komoditas disimpan.")
     return splits, scaler, cols
 
 

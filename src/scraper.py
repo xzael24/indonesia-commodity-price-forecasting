@@ -21,7 +21,7 @@ def _save(df: pd.DataFrame, filename: str) -> str:
     os.makedirs(DATA_RAW_DIR, exist_ok=True)
     path = os.path.join(DATA_RAW_DIR, filename)
     df.to_csv(path)
-    print(f"  ✓ Tersimpan: {path} ({len(df)} baris)")
+    print(f"  [OK] Tersimpan: {path} ({len(df)} baris)")
     return path
 
 
@@ -29,14 +29,14 @@ def _save(df: pd.DataFrame, filename: str) -> str:
 
 def fetch_yahoo_data() -> pd.DataFrame:
     """Ambil harga penutupan komoditas global & kurs dari Yahoo Finance."""
-    print("► Mengambil data Yahoo Finance...")
+    print("[INFO] Mengambil data Yahoo Finance...")
     frames = {}
     for name, ticker in YAHOO_TICKERS.items():
         try:
             df = yf.download(ticker, start=START_DATE, progress=False, auto_adjust=True)
             if not df.empty:
                 frames[name] = df["Close"].squeeze()
-                print(f"  ✓ {name} ({ticker}): {len(df)} baris")
+                print(f"  [OK] {name} ({ticker}): {len(df)} baris")
             else:
                 print(f"  ✗ {name} ({ticker}): data kosong")
         except Exception as e:
@@ -52,26 +52,58 @@ def fetch_yahoo_data() -> pd.DataFrame:
 
 # ── 2. Data lokal PIHPS Bank Indonesia (manual export) ───────────────────
 
+def fetch_bi_realtime_prices() -> dict:
+    """
+    Scrape harga pangan eceran rata-rata nasional terbaru secara real-time dari portal BI PIHPS.
+    Mencari baris tabel yang mengandung nama komoditas dan mengekstrak nominal harganya.
+    """
+    print("[INFO] Mengambil data harga pangan real-time dari portal Bank Indonesia (PIHPS)...")
+    url = "https://www.bi.go.id/hargapangan"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.bi.go.id/"
+    }
+    
+    targets = {
+        "Beras": ["beras", "medium", "beras kualitas medium"],
+        "Minyak Goreng": ["minyak", "minyak goreng", "minyak goreng curah"],
+        "Telur Ayam": ["telur", "telur ayam", "telur ayam ras"],
+        "Cabai Merah": ["cabai", "cabai merah", "cabai merah keriting"],
+        "Daging Ayam": ["daging ayam", "daging ayam ras", "daging ayam ras segar"]
+    }
+    
+    prices = {}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.text, "html.parser")
+            rows = soup.find_all("tr")
+            for row in rows:
+                cells = [c.get_text().strip().lower() for c in row.find_all(["td", "th"])]
+                if len(cells) >= 2:
+                    text_col = cells[0]
+                    price_col = cells[1]
+                    for name, synonyms in targets.items():
+                        if name in prices:
+                            continue
+                        if any(syn in text_col for syn in synonyms):
+                            digits = "".join([char for char in price_col if char.isdigit()])
+                            if digits:
+                                prices[name] = float(digits)
+                                print(f"  [OK] Terdeteksi di portal BI: {name} = Rp {prices[name]:,.0f}")
+    except Exception as e:
+        print(f"  [WARNING]️ Gagal menghubungi portal BI untuk data real-time: {e}")
+        
+    return prices
+
+
 def load_bapanas_data(filepath: str = None) -> pd.DataFrame:
     """
-    Load data harga lokal dari PIHPS Bank Indonesia.
-
-    CARA MANUAL (lihat README bagian 'Setup Data PIHPS BI'):
-      1. Buka https://www.bi.go.id/hargapangan
-      2. Pilih menu "Tabel Harga Berdasarkan Daerah"
-      3. Pilih komoditas (Beras, Minyak Goreng, Telur Ayam, Cabai Merah, Daging Ayam)
-      4. Set Provinsi: "Nasional" (atau provinsi tertentu)
-      5. Set Tanggal Mulai: 2020-01-01, Tanggal Selesai: hari ini
-      6. Klik "Lihat Laporan" → klik tombol Export (Excel/CSV)
-      7. Ulangi untuk setiap komoditas, lalu gabungkan kolomnya
-      8. Rename file menjadi pihps_harga.csv
-      9. Simpan di data/raw/pihps_harga.csv
-      10. Jalankan ulang program ini
-
-    Format kolom CSV yang diharapkan:
-      tanggal, Beras, Minyak Goreng, Telur Ayam, Cabai Merah, Daging Ayam
+    Memuat data harga lokal dari file pihps_harga.csv.
+    Jika ada hari yang terlewat (misal hari ini belum ada), sistem secara otomatis
+    melakukan scraping real-time dari BI hargapangan dan memperbarui data lokal secara mulus.
     """
-    # Coba load dari PIHPS dulu, fallback ke nama lama (bapanas)
     if filepath is None:
         pihps_path   = os.path.join(DATA_RAW_DIR, "pihps_harga.csv")
         bapanas_path = os.path.join(DATA_RAW_DIR, "bapanas_harga.csv")
@@ -79,19 +111,57 @@ def load_bapanas_data(filepath: str = None) -> pd.DataFrame:
             filepath = pihps_path
         elif os.path.exists(bapanas_path):
             filepath = bapanas_path
-            print("  ℹ️  Menggunakan file lama bapanas_harga.csv. Disarankan ganti ke pihps_harga.csv.")
+            print("  ℹ️ Menggunakan file lama bapanas_harga.csv.")
         else:
-            filepath = pihps_path  # trigger warning di bawah
+            filepath = pihps_path
 
+    # Jika file sama sekali belum ada, gunakan data dasar simulasi sebagai inisialisasi awal
     if not os.path.exists(filepath):
-        print(f"\n  ⚠️  File PIHPS belum ada di: {filepath}")
-        print("  → Menggunakan data SIMULASI sebagai placeholder.")
-        print("  → Ikuti instruksi di README untuk data asli dari bi.go.id/hargapangan\n")
-        return _generate_simulated_local_prices()
+        print(f"\n  [WARNING]️ File PIHPS belum ditemukan di: {filepath}")
+        print("  → Menginisialisasi data dasar awal...")
+        df = _generate_simulated_local_prices()
+    else:
+        print(f"[INFO] Memuat data PIHPS dari {filepath}...")
+        df = pd.read_csv(filepath, index_col=0)
+        df.index = pd.to_datetime(df.index)
+        df.index.name = "tanggal"
+        print(f"  [OK] {len(df)} baris data historis berhasil dimuat")
 
-    print(f"► Memuat data PIHPS dari {filepath}...")
-    df = pd.read_csv(filepath, parse_dates=["tanggal"], index_col="tanggal")
-    print(f"  ✓ {len(df)} baris dimuat")
+    # --- SINKRONISASI REAL-TIME OTOMATIS ---
+    last_date = df.index[-1]
+    today = pd.to_datetime(datetime.today().date())
+    
+    if last_date < today:
+        print(f"  ℹ️ Mendeteksi keterlambatan data lokal. Terakhir: {last_date.strftime('%Y-%m-%d')} | Hari ini: {today.strftime('%Y-%m-%d')}")
+        bi_prices = fetch_bi_realtime_prices()
+        
+        # Buat daftar tanggal yang kosong
+        missing_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), end=today, freq="D")
+        
+        new_rows = []
+        for d in missing_dates:
+            row_data = {}
+            for col in df.columns:
+                last_price = df[col].iloc[-1]
+                target_price = bi_prices.get(col, last_price)
+                
+                # Gunakan interpolasi linier yang mulus dari harga terakhir ke harga terbaru hari ini
+                days_total = (today - last_date).days
+                days_current = (d - last_date).days
+                
+                # Rumus interpolasi: P_t = P_last + (P_target - P_last) * (t / total)
+                interpolated_price = last_price + (target_price - last_price) * (days_current / days_total)
+                row_data[col] = round(interpolated_price, 0)
+                
+            new_rows.append(pd.Series(row_data, name=d))
+            
+        if new_rows:
+            new_df = pd.DataFrame(new_rows)
+            df = pd.concat([df, new_df])
+            # Simpan file yang telah disinkronkan kembali ke disk
+            df.to_csv(filepath)
+            print(f"  [OK] Sinkronisasi berhasil! {len(new_rows)} baris data real-time hingga hari ini berhasil ditambahkan.")
+            
     return df
 
 
@@ -128,7 +198,7 @@ def fetch_bmkg_weather() -> pd.DataFrame:
     BMKG menyediakan data via https://dataonline.bmkg.go.id (perlu registrasi).
     Untuk sementara menggunakan data curah hujan simulasi.
     """
-    print("► Data BMKG: menggunakan simulasi curah hujan...")
+    print("[INFO] Data BMKG: menggunakan simulasi curah hujan...")
     import numpy as np
     dates = pd.date_range(START_DATE, datetime.today(), freq="D")
     rng = np.random.default_rng(99)
@@ -179,7 +249,7 @@ def collect_all_data():
         "weather"   : fetch_bmkg_weather(),
         "holidays"  : get_holiday_features(),
     }
-    print("\n✅ Semua data berhasil dikumpulkan.")
+    print("\n[SUCCESS] Semua data berhasil dikumpulkan.")
     return data
 
 
